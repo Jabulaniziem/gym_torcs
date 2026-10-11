@@ -37,7 +37,7 @@ import math
 # ================= USER CONFIGURABLE PARAMETERS =================
 
 ######### REQUIRED FOR PRACTICE MODE - CAN CHANGE BUT DO NOT REMOVE #########
-TARGET_SPEED = 260  # Target speed in km/h. Increasing this makes the car go faster but may reduce stability.
+TARGET_SPEED = 270  # Target speed in km/h. Raised slightly for Corkscrew straights.
 STEER_GAIN = 30     # Steering sensitivity. Higher values make the car turn more aggressively.
 CENTERING_GAIN = 0.20  # How strongly the car corrects its position toward the center of the track.
 BRAKE_THRESHOLD = 0.9  # Angle threshold for braking. Lower values brake earlier.
@@ -565,19 +565,23 @@ import datetime
 
 # --- v1 tunables (separate from the legacy CLI parameters above) ---
 STEER_LOCK = 0.785398        # rad at full lock in SCR
-PURSUIT_OFFSET = 0.6         # pull toward centre: target = angle - trackPos * this
-STEER_SPEED_DAMP = 0.0025    # steering gain shrinks as 1/(1 + damp*speed)
-BRAKE_DECEL = 16.0           # m/s^2 assumed braking ability (lower = brakes earlier)
-BRAKE_MARGIN = 12.0          # metres of safety taken off the visible distance
-V_CORNER_MIN = 65.0          # km/h floor in the stopping-distance model
-ACCEL_SOFT = 10.0            # km/h speed error that gives full throttle
-BRAKE_SOFT = 20.0            # km/h speed error that gives full brake
+PURSUIT_OFFSET = 0.5         # pull toward centre (reduced: less centering fight at speed)
+STEER_SPEED_DAMP = 0.0022    # steering gain shrinks as 1/(1 + damp*speed)
+BRAKE_DECEL = 21.0           # m/s^2 — raised: assumes harder braking = later brake point
+BRAKE_MARGIN = 3.0           # metres of safety (reduced from 6: brake even later)
+V_CORNER_MIN = 55.0          # km/h floor — lowered so zone exits accelerate faster
+ACCEL_SOFT = 5.0             # km/h error for full throttle (reduced: snaps to power faster out of corners)
+BRAKE_SOFT = 14.0            # km/h error for full brake (tightened: crisper threshold)
 TC_SLIP = 2.0                # rad/s (rear minus front wheel spin) before cutting throttle
 TC_GAIN = 0.15
-ABS_FRAC = 0.12              # relative slip before ABS eases the brake
+ABS_FRAC = 0.12              # relative slip before ABS eases the brake (unchanged)
 ABS_GAIN = 6.0
-EDGE_POS = 0.85              # |trackPos| above this = too close to the edge
-SPEED_ZONES = [(2420.0, 2510.0, 55.0)]  # Corkscrew hairpin: keep the entry speed controlled.
+EDGE_POS = 0.85              # |trackPos| above this = too close to the edge (unchanged)
+SPEED_ZONES = [
+    (2400.0, 2419.9, 80.0),   # Corkscrew approach: bleed speed gradually before the hairpin entry.
+    (2490.0, 2505.0, 55.0),   # Corkscrew hairpin: keep the entry speed controlled.
+    (3180.0, 3250.0, 50.0),   # Sharp hairpin loop ~3200m: tight enough to require significant slowdown.
+]
 LOG_ENABLED = True
 
 _bob = {'k': None, 'brake_prev': 0.0, 'log': None, 'writer': None, 'step': 0}
@@ -621,18 +625,24 @@ def drive_bob(c):
     R['steer'] = _clip(steer, -1.0, 1.0)
 
     # ---- target speed from how far we can see (stopping-distance model) ----
-    look = 0.5 * track[9] + 0.25 * (track[8] + track[10])
+    # Wider 5-sensor cone (±30°): earlier view of clear track on exit from corners
+    look = (0.10 * track[7] + 0.20 * track[8] + 0.40 * track[9]
+            + 0.20 * track[10] + 0.10 * track[11])
     d_eff = max(look - BRAKE_MARGIN, 0.0)
     v_floor = V_CORNER_MIN / 3.6
     v_target = 3.6 * math.sqrt(v_floor ** 2 + 2.0 * BRAKE_DECEL * d_eff)
     v_target = min(v_target, TARGET_SPEED)
+    in_speed_zone = False
     for (d0, d1, vmax) in SPEED_ZONES:
         if d0 <= dist <= d1:
             v_target = min(v_target, vmax)
-    if abs(pos) > EDGE_POS:
+            in_speed_zone = True
+    # Edge penalty only applies outside a speed zone; inside a zone the cap already
+    # sets the target speed, so applying 0.8 would drop it below the intended value.
+    if abs(pos) > EDGE_POS and not in_speed_zone:
         v_target *= 0.8
     if off_track:
-        v_target = min(v_target, 35.0)
+        v_target = min(v_target, 50.0)
 
     # ---- throttle / brake ----
     err = v_target - speed
